@@ -1,0 +1,7 @@
+.gcloudignore
+.git
+.gitignore
+LICENSE
+README.md
+.idea
+service-account-file.json
