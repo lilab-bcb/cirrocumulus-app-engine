@@ -1,5 +1,5 @@
 CacheControl==0.12.6
-cirrocumulus==1.1.10.post3
+cirrocumulus==1.1.10.post4
 Flask==1.1.2
 fsspec==0.8.4
 gcsfs==0.7.1
