@@ -1,5 +1,5 @@
 chardet==3.0.4
-cirrocumulus==1.1.13
+cirrocumulus==1.1.13.post1
 gcsfs==0.7.1
 google-auth===1.24.0
 google-cloud-datastore==2.1.0
