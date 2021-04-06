@@ -1,14 +1,13 @@
 import os
 
-from flask import Flask, send_from_directory
-
 import cirrocumulus
-from cirrocumulus.api import blueprint, auth_api, database_api, dataset_api
+from cirrocumulus.api import blueprint, dataset_api
 from cirrocumulus.envir import CIRRO_AUTH_CLIENT_ID
 from cirrocumulus.firestore_datastore import FirestoreDatastore
 from cirrocumulus.google_auth import GoogleAuth
 from cirrocumulus.no_auth import NoAuth
 from cirrocumulus.parquet_dataset import ParquetDataset
+from flask import Flask, send_from_directory
 
 
 client_path = os.path.join(cirrocumulus.__path__[0], 'client')
@@ -28,10 +27,11 @@ def root():
 dataset_api.add(ParquetDataset())
 
 if os.environ.get(CIRRO_AUTH_CLIENT_ID) is not None:
-    auth_api.provider = GoogleAuth(os.environ.get(CIRRO_AUTH_CLIENT_ID))
+    app.config['AUTH'] = GoogleAuth(os.environ.get(CIRRO_AUTH_CLIENT_ID))
 else:
-    auth_api.provider = provider = NoAuth()
-database_api.provider = FirestoreDatastore()
+    app.config['AUTH'] = NoAuth()
+
+app.config['DATABASE'] = FirestoreDatastore()
 
 if __name__ == '__main__':
     # from flask_cors import CORS
