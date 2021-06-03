@@ -1,5 +1,5 @@
 runtime: python38
-instance_class: F4_1G
+instance_class: F4
 automatic_scaling:
   target_cpu_utilization: 0.95
   target_throughput_utilization: 0.95
@@ -36,4 +36,4 @@ handlers:
 
 
 env_variables:
-  CIRRO_AUTH_CLIENT_ID: "ENTER OAUTH ID"
+  CIRRO_AUTH_CLIENT_ID: "964448350275-ghjb3k21badpdc25l2imn0a9qdbe44vb.apps.googleusercontent.com"
