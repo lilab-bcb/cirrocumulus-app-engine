@@ -3,12 +3,12 @@ import os
 import cirrocumulus
 from cirrocumulus.api import blueprint, dataset_api
 from cirrocumulus.envir import CIRRO_AUTH_CLIENT_ID
-from cirrocumulus.firestore_datastore import FirestoreDatastore
 from cirrocumulus.google_auth import GoogleAuth
 from cirrocumulus.no_auth import NoAuth
 from cirrocumulus.parquet_dataset import ParquetDataset
 from flask import Flask, send_from_directory
 
+from cloud_firestore_native import CloudFireStoreNative
 
 client_path = os.path.join(cirrocumulus.__path__[0], 'client')
 # If `entrypoint` is not defined in app.yaml, App Engine will look for an app
@@ -31,9 +31,7 @@ if os.environ.get(CIRRO_AUTH_CLIENT_ID) is not None:
 else:
     app.config['AUTH'] = NoAuth()
 
-app.config['DATABASE'] = FirestoreDatastore()
+app.config['DATABASE'] = CloudFireStoreNative()
 
 if __name__ == '__main__':
-    # from flask_cors import CORS
-    # CORS(app)
     app.run(host='127.0.0.1', port=5000, debug=True)

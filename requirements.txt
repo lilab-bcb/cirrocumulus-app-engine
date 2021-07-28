@@ -1,4 +1,3 @@
 cirrocumulus==1.1.17.post1
 gcsfs==2021.7.0
-google-auth===1.24.0
-google-cloud-datastore==2.1.4
+google-cloud-datastore==2.1.5
