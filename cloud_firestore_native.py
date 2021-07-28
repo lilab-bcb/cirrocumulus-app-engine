@@ -18,6 +18,15 @@ JOB = 'Job'
 JOB_RESULT = 'Job_Result'
 
 
+def get_datasets(results, email, query, unique_ids):
+    for result in query.fetch():
+        if result.id not in unique_ids:
+            unique_ids.add(result.id)
+            results.append(
+                {'id': result.id, 'name': result['name'], 'title': result.get('title'),
+                 'owner': email in result['owners'], 'species': result.get('species'), 'url': result['url']})
+
+
 class CloudFireStoreNative(AbstractDB):
 
     def __init__(self):
@@ -126,14 +135,6 @@ class CloudFireStoreNative(AbstractDB):
         user.update({'last_login': datetime.datetime.utcnow()})
         client.put(user)
         return user
-
-    def get_datasets(results, email, query, unique_ids):
-        for result in query.fetch():
-            if result.id not in unique_ids:
-                unique_ids.add(result.id)
-                results.append(
-                    {'id': result.id, 'name': result['name'], 'title': result.get('title'),
-                     'owner': email in result['owners'], 'species': result.get('species'), 'url': result['url']})
 
     def datasets(self, email):
         client = self.datastore_client
