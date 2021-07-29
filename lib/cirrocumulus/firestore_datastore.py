@@ -5,9 +5,9 @@ import os
 from google.cloud import datastore
 
 from cirrocumulus.abstract_db import AbstractDB
-from cirrocumulus.envir import SERVER_CAPABILITY_JOBS, CIRRO_EMAIL
-from cirrocumulus.invalid_usage import InvalidUsage
 from cirrocumulus.util import get_email_domain
+from .envir import SERVER_CAPABILITY_JOBS, CIRRO_EMAIL
+from .invalid_usage import InvalidUsage
 
 DATASET = 'Dataset'
 CAT_NAME = 'Cat_Name'
@@ -19,16 +19,7 @@ JOB = 'Job'
 JOB_RESULT = 'Job_Result'
 
 
-def get_datasets(results, email, query, unique_ids):
-    for result in query.fetch():
-        if result.id not in unique_ids:
-            unique_ids.add(result.id)
-            results.append(
-                {'id': result.id, 'name': result['name'], 'title': result.get('title'),
-                 'owner': email in result['owners'], 'species': result.get('species'), 'url': result['url']})
-
-
-class CloudFireStoreNative(AbstractDB):
+class FirestoreDatastore(AbstractDB):
 
     def __init__(self):
         super().__init__()
@@ -142,18 +133,23 @@ class CloudFireStoreNative(AbstractDB):
         query = client.query(kind=DATASET)
         query.add_filter('readers', '=', email)
         results = []
-        unique_ids = set()
-        get_datasets(results, email, query, unique_ids)
+        for result in query.fetch():
+            results.append(
+                {'id': result.id, 'name': result['name'], 'title': result.get('title'),
+                 'owner': email in result['owners'], 'species': result.get('species'), 'url': result['url']})
         domain = get_email_domain(email)
         if domain is not None:
             query = client.query(kind=DATASET)
             query.add_filter('readers', '=', domain)
-            # TODO make this more efficient
-            get_datasets(results, email, query, unique_ids)
-
-            query = client.query(kind=DATASET)
-            query.add_filter('readers', '=', 'allUsers')
-            get_datasets(results, email, query, unique_ids)
+            unique_ids = set()
+            for result in results:
+                unique_ids.add(result['id'])
+            for result in query.fetch():
+                if result.id not in unique_ids:
+                    results.append({'id': result.id, 'name': result['name'], 'title': result.get('title'),
+                                    'species': result.get('species'),
+                                    'owner': email in result['owners'],
+                                    'url': result['url']})
         return results
 
     def delete_dataset(self, email, dataset_id):
@@ -242,7 +238,7 @@ class CloudFireStoreNative(AbstractDB):
         return self.__get_entity(email=email, entity_id=view_id, kind=DATASET_VIEW)
 
     def upsert_dataset_view(self, email, dataset_id, view_id, name, value):
-        entity_update = {'created': datetime.datetime.utcnow()}
+        entity_update = {}
         if email is not None:
             entity_update['email'] = email
         if name is not None:
@@ -297,13 +293,11 @@ class CloudFireStoreNative(AbstractDB):
 
     def get_jobs(self, email, dataset_id):
         client = self.datastore_client
-        results = []
-
         query = client.query(kind=JOB)
         dataset_id = int(dataset_id)
         self.__get_key_and_dataset(email, dataset_id, False)
         query.add_filter('dataset_id', '=', dataset_id)
-
+        results = []
         for result in query.fetch():
             results.append(
                 dict(id=result.id, name=result['name'], type=result['type'], submitted=result.get('submitted'),

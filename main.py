@@ -1,14 +1,17 @@
 import os
 
+import sys
+
+sys.path.append('lib')
+from flask import Flask, send_from_directory
+
 import cirrocumulus
+from cloud_firestore_native import CloudFireStoreNative
 from cirrocumulus.api import blueprint, dataset_api
 from cirrocumulus.envir import CIRRO_AUTH_CLIENT_ID
 from cirrocumulus.google_auth import GoogleAuth
 from cirrocumulus.no_auth import NoAuth
 from cirrocumulus.parquet_dataset import ParquetDataset
-from flask import Flask, send_from_directory
-
-from cloud_firestore_native import CloudFireStoreNative
 
 client_path = os.path.join(cirrocumulus.__path__[0], 'client')
 # If `entrypoint` is not defined in app.yaml, App Engine will look for an app
