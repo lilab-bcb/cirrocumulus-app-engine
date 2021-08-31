@@ -1,7 +1,7 @@
 CacheControl==0.12.6
 Flask==2.0.1
-fsspec==2021.7.0
-gcsfs==2021.7.0
+fsspec==2021.8.1
+gcsfs==2021.8.1
 google-cloud-datastore==2.1.6
 natsort==7.1.1
 numpy==1.21.2
