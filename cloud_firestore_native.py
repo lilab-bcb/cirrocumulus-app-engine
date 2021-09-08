@@ -2,12 +2,11 @@ import datetime
 import json
 import os
 
-from google.cloud import datastore
-
 from cirrocumulus.abstract_db import AbstractDB
 from cirrocumulus.envir import SERVER_CAPABILITY_JOBS, CIRRO_EMAIL
 from cirrocumulus.invalid_usage import InvalidUsage
 from cirrocumulus.util import get_email_domain
+from google.cloud import datastore
 
 DATASET = 'Dataset'
 CAT_NAME = 'Cat_Name'
@@ -108,24 +107,34 @@ class CloudFireStoreNative(AbstractDB):
         client = self.datastore_client
         query = client.query(kind=CAT_NAME)
         query.add_filter('dataset_id', '=', dataset_id)
-        results = []
+        results = {}
         for result in query.fetch():
-            results.append(result)
+            category = result['category']
+            cat_results = results.get(category)
+            if cat_results is None:
+                cat_results = {}
+                results[category] = cat_results
+            cat_results[result['original']] = {'newValue': result.get('new'),
+                                               'negativeMarkers': result.get('negativeMarkers'),
+                                               'positiveMarkers': result.get('positiveMarkers'),
+                                               'color': result.get('color')}
+
         return results
 
-    def upsert_category_name(self, email, category, dataset_id, original_name, new_name):
+    def upsert_category_name(self, email, dataset_id, category, original_value, update):
         dataset_id = int(dataset_id)
         self.__get_key_and_dataset(email, dataset_id, False)
         client = self.datastore_client
-        key = client.key(CAT_NAME, str(dataset_id) + '-' + str(category) + '-' + str(original_name))
-
-        if new_name == '':
-            client.delete(key)
-        else:
-            entity = datastore.Entity(key=key)
-            entity.update(dict(category=category, dataset_id=dataset_id, original=original_name, new=new_name))
-            client.put(entity)
-            return entity.id
+        key = client.key(CAT_NAME, str(dataset_id) + '-' + str(category) + '-' + str(original_value))
+        entity = datastore.Entity(key=key)
+        update['category'] = category
+        update['dataset_id'] = dataset_id
+        update['original'] = original_value
+        if 'newValue' in update:  # backwards compatibility
+            update['new'] = update.pop('newValue')
+        entity.update(update)
+        client.put(entity)
+        return entity.id
 
     def user(self, email):
         client = self.datastore_client
