@@ -4,31 +4,29 @@ import scipy.sparse
 from anndata import AnnData
 
 from cirrocumulus.abstract_dataset import AbstractDataset
-# only works with local files
 from cirrocumulus.anndata_util import datasets_schema
 from cirrocumulus.io_util import read_star_fusion_file
 
 
 class AnndataDataset(AbstractDataset):
 
-    def __init__(self, backed=None, force_sparse=True, extensions=['h5ad', 'loom', 'zarr', 'rds']):
+    def __init__(self, backed=None, force_sparse=True):
         super().__init__()
         self.path_to_data = {}
         self.backed = backed
         self.force_sparse = force_sparse
-        self.extensions = extensions
 
     def get_suffixes(self):
-        return self.extensions
+        return ['h5ad', 'loom', 'rds', 'zarr']
 
-    def read_adata(self, path):
+    def read_adata(self, filesystem, path):
         path_lc = path.lower()
         if path_lc.endswith('.loom'):
-            return anndata.read_loom(path)
+            return anndata.read_loom(filesystem.open(path))
         elif path_lc.endswith('.zarr'):
-            return anndata.read_zarr(path)
+            return anndata.read_zarr(filesystem.open(path))
         elif path_lc.endswith('.tsv'):
-            return read_star_fusion_file(path)
+            return read_star_fusion_file(filesystem.open(path))
         elif path_lc.endswith('.rds'):  # Seurat, convert to h5ad
             h5_file = path + '.h5ad'
             import os
@@ -47,7 +45,7 @@ class AnndataDataset(AbstractDataset):
                 print('Using adata.raw')
                 adata = anndata.AnnData(X=adata.raw.X, var=adata.raw.var, obs=adata.obs, obsm=adata.obsm, uns=adata.uns)
             return adata
-        return anndata.read_h5ad(path, backed='r' if self.backed else None)
+        return anndata.read_h5ad(filesystem.open(path), backed='r' if self.backed else None)
         # elif path.endswith('.mtx'):
         #
         #     return anndata.read_mtx(path, backed=self.backed)
@@ -61,35 +59,38 @@ class AnndataDataset(AbstractDataset):
     def add_data(self, path, data):
         self.path_to_data[path] = data
 
-    def get_data(self, path):
+    def get_data(self, filesystem, path):
         adata = self.path_to_data.get(path)
         if adata is None:
-            adata = self.read_adata(path)
+            adata = self.read_adata(filesystem, path)
             if scipy.sparse.isspmatrix_csr(adata.X) and adata.X.shape[1] > 1:
                 adata.X = adata.X.tocsc()
             self.add_data(path, adata)
         return adata
 
-    def schema(self, filesystem, path):
-        return datasets_schema([self.get_data(path)])
+    def get_schema(self, filesystem, path):
+        return datasets_schema([self.get_data(filesystem, path)])
 
-    def read_dataset(self, filesystem, path, keys=None, dataset=None, schema=None):
-        adata = self.get_data(path)
+    def read_dataset(self, filesystem, path, keys=None, dataset=None):
+        adata = self.get_data(filesystem, path)
         if keys is None:
             keys = {}
         keys = keys.copy()
-        var_keys = keys.pop('X', [])
+        X_keys = keys.pop('X', [])
         obs_keys = keys.pop('obs', [])
         basis_keys = keys.pop('basis', [])
         X = None
         obs = None
         var = None
         obsm = {}
-        if len(var_keys) > 0:
-            X = adata[:, var_keys].X
-            if not scipy.sparse.issparse(X):
-                X = scipy.sparse.csc_matrix(X)
-            var = pd.DataFrame(index=var_keys)
+        if len(X_keys) > 0:
+            if len(X_keys) == 1 and isinstance(X_keys[0], slice):  # special case if slice specified
+                X_keys = X_keys[0]
+            d = adata[:, X_keys]
+            if scipy.sparse.issparse(d.X) and not scipy.sparse.isspmatrix_csc(d.X):
+                d.X = d.X.tocsc()
+            X = d.X
+            var = pd.DataFrame(index=d.var.index)
         # for key in keys.keys():
         #     if df is None:
         #         df = pd.DataFrame()
@@ -111,6 +112,8 @@ class AnndataDataset(AbstractDataset):
             for key in basis_keys:
                 embedding_data = adata.obsm[key]
                 obsm[key] = embedding_data
-                if X is None:
-                    X = scipy.sparse.coo_matrix(([], ([], [])), shape=(embedding_data.shape[0], 0))
+            if X is None:  # anndata requires empty X
+                X = scipy.sparse.coo_matrix(([], ([], [])), shape=(embedding_data.shape[0], 0))
+        if X is None and obs is None and len(obsm.keys()) == 0:
+            obs = pd.DataFrame(index=pd.RangeIndex(adata.shape[0]))
         return AnnData(X=X, obs=obs, var=var, obsm=obsm)

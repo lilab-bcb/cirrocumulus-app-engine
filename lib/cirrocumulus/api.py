@@ -1,10 +1,12 @@
+import json
 import os
 
 from flask import Blueprint, Response, request, stream_with_context, current_app
 
 import cirrocumulus.data_processing as data_processing
 from .dataset_api import DatasetAPI
-from .envir import CIRRO_SERVE, CIRRO_FOOTER, CIRRO_UPLOAD, CIRRO_BRAND, CIRRO_EMAIL
+from .envir import CIRRO_SERVE, CIRRO_FOOTER, CIRRO_UPLOAD, CIRRO_BRAND, CIRRO_EMAIL, CIRRO_AUTH, CIRRO_DATABASE, \
+    CIRRO_DATASET_SELECTOR_COLUMNS, CIRRO_CELL_ONTOLOGY, CIRRO_STATIC_DIR, CIRRO_MOUNT, CIRRO_MIXPANEL
 from .invalid_usage import InvalidUsage
 from .job_api import submit_job
 from .util import json_response, get_scheme, get_fs
@@ -13,6 +15,13 @@ blueprint = Blueprint('blueprint', __name__)
 
 dataset_api = DatasetAPI()
 
+remapped_urls = dict()
+if os.environ.get(CIRRO_MOUNT) is not None:
+    tokens = os.environ.get(CIRRO_MOUNT).split(',')
+    for token in tokens:
+        bucket, local_path = token.split(':')
+        remapped_urls[bucket] = local_path
+
 
 @blueprint.errorhandler(InvalidUsage)
 def handle_invalid_usage(error):
@@ -20,11 +29,11 @@ def handle_invalid_usage(error):
 
 
 def get_database():
-    return current_app.config['DATABASE']
+    return current_app.config[CIRRO_DATABASE]
 
 
 def get_auth():
-    return current_app.config['AUTH']
+    return current_app.config[CIRRO_AUTH]
 
 
 @blueprint.route('/server', methods=['GET'])
@@ -34,14 +43,49 @@ def handle_server():
     d['email'] = os.environ.get(CIRRO_EMAIL)
     d['capabilities'] = get_database().capabilities()
     d['clientId'] = get_auth().client_id
+    if os.environ.get(CIRRO_MIXPANEL) is not None:
+        d['mixpanel'] = os.environ[CIRRO_MIXPANEL]
+    if os.environ.get(CIRRO_DATASET_SELECTOR_COLUMNS) is not None:
+        if os.path.exists(os.environ[CIRRO_DATASET_SELECTOR_COLUMNS]):
+            with open(os.environ[CIRRO_DATASET_SELECTOR_COLUMNS], 'rt') as f:
+                d['datasetSelectorColumns'] = json.loads(f.read())
+        else:
+            d['datasetSelectorColumns'] = json.loads(os.environ[CIRRO_DATASET_SELECTOR_COLUMNS])
     if os.environ.get(CIRRO_FOOTER) is not None:
         with open(os.environ.get(CIRRO_FOOTER), 'rt') as f:
             d['footer'] = f.read()
     if os.environ.get(CIRRO_BRAND) is not None:
         with open(os.environ.get(CIRRO_BRAND), 'rt') as f:
             d['brand'] = f.read()
-    # server['brand'] = os.environ.get(CIRRO_BRAND)
     d['upload'] = os.environ.get(CIRRO_UPLOAD) is not None
+    if os.environ.get(CIRRO_CELL_ONTOLOGY) is not None:
+        if os.path.exists(os.environ[CIRRO_CELL_ONTOLOGY]):
+            def parse_term(f):
+                term = dict()
+                for term_line in f:
+                    term_line = term_line.strip()
+                    if term_line.startswith("["):
+                        break
+                    index = term_line.find(':')
+                    if index != -1:
+                        key = term_line[:index]
+                        term[key] = term_line[index + 1:].strip()
+                # if term.get('is_obsolete', '') == 'true':
+                #     return None
+                return term
+
+            terms = []
+            with open(os.environ[CIRRO_CELL_ONTOLOGY], 'rt') as f:  # obo file
+                for line in f:
+                    line = line.strip()
+                    if line == "[Term]":
+                        t = parse_term(f)
+                        if t is not None:
+                            terms.append(t)
+
+            d['ontology'] = dict(cellTypes=terms)
+        else:
+            d['ontology'] = dict(cellTypes=os.environ[CIRRO_CELL_ONTOLOGY])
     return json_response(d)
 
 
@@ -144,26 +188,24 @@ def handle_dataset_view():
         if view_id == '':
             return 'Please provide an id', 400
         return json_response(database_api.get_dataset_view(email, view_id=view_id))
-    content = request.get_json(force=True, cache=False)
-    view_id = content.get('id')
-    name = content.get('name')
+    d = request.get_json(force=True, cache=False)
 
     # POST=new, PUT=update , DELETE=delete, GET=get
     if request.method == 'PUT' or request.method == 'POST':
-        dataset_id = content.get('ds_id')
+        dataset_id = d.pop('ds_id')
+        view_id = d.pop('id') if request.method == 'PUT' else None
         if request.method == 'PUT' and view_id is None:
             return 'Please supply an id', 400
         if request.method == 'POST' and dataset_id is None:
             return 'Please supply a ds_id', 400
+
         view_id = database_api.upsert_dataset_view(
             email=email,
             dataset_id=dataset_id,
-            view_id=view_id if request.method == 'PUT' else None,
-            name=name,
-            value=content.get('value'))
+            view=d)
         return json_response({'id': view_id})
     elif request.method == 'DELETE':
-        database_api.delete_dataset_view(email, view_id=view_id)
+        database_api.delete_dataset_view(email, view_id=d.pop('id'))
         return json_response('', 204)
 
 
@@ -175,14 +217,14 @@ def handle_schema():
     database_api = get_database()
     dataset_id = request.args.get('id', '')
     dataset = database_api.get_dataset(email, dataset_id)
-    schema = dataset_api.schema(dataset)
+    schema = dataset_api.get_schema(dataset)
     schema.update(dataset)  # add title, etc from database to schema
     schema['markers'] = database_api.get_feature_sets(email=email, dataset_id=dataset_id)
     return json_response(schema)
 
 
 def get_file_path(file, dataset_url):
-    # when serving dataset, image must be relative to dataset directory
+    # when serving dataset, file must be relative to dataset directory
     if os.environ.get(CIRRO_SERVE) == 'true':
         _, ext = os.path.splitext(dataset_url)
         if file[0] == '/' or file.find('..') != -1:
@@ -223,8 +265,19 @@ def handle_file():
     email = get_auth().auth()['email']
     database_api = get_database()
     dataset_id = request.args.get('id', '')
-    dataset = database_api.get_dataset(email, dataset_id)
-    file_path = get_file_path(request.args.get('file'), dataset['url'])
+    url = request.args.get('file')
+    if dataset_id == '':  # allow if file is in static directory
+        static_dirs = os.environ.get(CIRRO_STATIC_DIR)
+        if static_dirs is None:
+            return 'Not authorized', 401
+        static_dirs = static_dirs.split(',')
+        if os.path.dirname(url) in static_dirs:
+            return send_file(url)
+        return 'Not authorized', 401
+    else:
+        dataset = database_api.get_dataset(email, dataset_id)
+        file_path = get_file_path(url, dataset['url'])
+        file_path = map_url(file_path)
     return send_file(file_path)
 
 
@@ -236,6 +289,15 @@ def handle_user():
     return json_response(user)
 
 
+def map_url(url):
+    for remote_path in remapped_urls:
+        before_replace = url
+        url = url.replace(remote_path, remapped_urls[remote_path])
+        if before_replace != url:  # only replace URL once
+            return url
+    return url
+
+
 def get_email_and_dataset(content):
     email = get_auth().auth()['email']
     dataset_id = content.get('id', '')
@@ -243,6 +305,7 @@ def get_email_and_dataset(content):
         return 'Please supply an id', 400
     database_api = get_database()
     dataset = database_api.get_dataset(email, dataset_id)
+    dataset['url'] = map_url(dataset['url'])
     return email, dataset
 
 
@@ -251,7 +314,8 @@ def handle_data():
     json_request = request.get_json(cache=False)
     email, dataset = get_email_and_dataset(json_request)
     return json_response(
-        data_processing.handle_data(dataset_api=dataset_api, dataset=dataset,
+        data_processing.handle_data(dataset_api=dataset_api,
+                                    dataset=dataset,
                                     embedding_list=json_request.get('embedding'),
                                     values=json_request.get('values'),
                                     stats=json_request.get('stats'),
@@ -300,7 +364,6 @@ def upload_file(file):
 
 
 def copy_url(url):
-    import fsspec
     from werkzeug.utils import secure_filename
     upload = os.environ.get(CIRRO_UPLOAD)
 
@@ -310,11 +373,11 @@ def copy_url(url):
     if urlparse(upload).netloc == urlparse(url).netloc:  # don't copy if already in the same bucket
         return url
     src_scheme = get_scheme(url)
-    src_fs = fsspec.filesystem(src_scheme)
+    src_fs = get_fs(src_scheme)
     filename = secure_filename(os.path.basename(url))
     dest = os.path.join(upload, filename)
     dest_scheme = get_scheme(dest)
-    dest_fs = fsspec.filesystem(dest_scheme)
+    dest_fs = get_fs(dest_scheme)
     out = dest_fs.open(dest, 'wb')
     n = 1024 * 1024
     with src_fs.open(url, mode='rb') as r:
@@ -333,15 +396,21 @@ def handle_dataset():
     database_api = get_database()
     # POST=new dataset, PUT=update dataset, DELETE=delete, GET=get dataset info
     if request.method == 'PUT' or request.method == 'POST':
-        dataset_id = request.form.get('id')
-        dataset_name = request.form.get('name')
-        description = request.form.get('description')
-        species = request.form.get('species')
-        title = request.form.get('title')
-        url = request.form.get('url')  # e.g. gs://foo/a/b/
-        file = request.files.get('file')
-        readers = request.form.get('readers')
-        if readers is not None:
+        if request.content_type == 'application/json':
+            d = request.get_json(force=True, cache=False)
+        else:
+            d = dict()
+            for key in request.form:
+                d[key] = request.form[key]
+
+        dataset_id = d.get('id')
+        dataset_name = d.get('name')
+        url = d.get('url')  # e.g. gs://foo/a/b/
+        readers = d.pop('readers') if 'readers' in d else None
+        file = None
+        if request.content_type != 'application/json':
+            file = request.files.get('file')  # file upload
+        if readers is not None and not isinstance(readers, list):
             import json
             readers = json.loads(readers)
         if request.method == 'PUT' and dataset_id is None:  # update
@@ -351,15 +420,16 @@ def handle_dataset():
 
         if url is not None and os.environ.get(CIRRO_UPLOAD) is not None:
             url = copy_url(url)
+            d['url'] = url
 
         if file is not None:
             if os.environ.get(CIRRO_UPLOAD) is None:
                 return 'Upload not supported', 400
             url = upload_file(file)
-        dataset_id = database_api.upsert_dataset(email=email,
-                                                 dataset_id=dataset_id if request.method == 'PUT' else None,
-                                                 dataset_name=dataset_name, url=url, readers=readers,
-                                                 description=description, title=title, species=species)
+            d['url'] = url
+        if request.method == 'POST' and url is None:  # new
+            return 'Must supply dataset URL', 400
+        dataset_id = database_api.upsert_dataset(email=email, readers=readers, dataset=d)
         return json_response({'id': dataset_id})
     elif request.method == 'DELETE':
         content = request.get_json(force=True, cache=False)
@@ -403,9 +473,40 @@ def handle_job():
             dataset_id = request.args.get('ds_id', '')
             email = get_auth().auth()['email']
             dataset = database_api.get_dataset(email, dataset_id)
-            file_path = get_file_path(os.path.join('uns', job_id + '.json.gz'), dataset['url'])
-            return send_file(file_path)
+            dataset['url'] = map_url(dataset['url'])
+            result = dataset_api.get_result(dataset, job_id)
+            return send_file(result)
         job = database_api.get_job(email=email, job_id=job_id, return_result=True)
+        if isinstance(job, dict) and 'url' in job:
+            url = job['url']
+            content_type = job.get('content-type')
+            if content_type == 'application/h5ad' or content_type == 'application/zarr':
+                import anndata
+                if content_type == 'application/h5ad':
+                    with get_fs(url).open(url, mode='rb') as f:
+                        adata = anndata.read(f)
+                else:
+                    adata = anndata.read_zarr(get_fs(url).get_mapper(url))
+
+                import pandas as pd
+                # output = StringIO()
+                # adata2gct(adata, output)
+                # r = Response(output.getvalue(), mimetype='text/plain')
+                df = pd.DataFrame(adata.X, index=adata.obs.index, columns=adata.var.index)
+                for key in adata.layers.keys():
+                    df2 = pd.DataFrame(adata.layers[key], index=adata.obs.index.astype(str) + '-{}'.format(key),
+                                       columns=adata.var.index)
+                    df = pd.concat((df, df2), axis=0)
+
+                df = df.T.join(adata.var)
+                df.index.name = 'id'
+                return Response(df.reset_index().to_json(double_precision=2, orient='records'),
+                                content_type='application/json')
+            else:
+                # URL to JSON or text
+                return send_file(url)
+        # elif isinstance(job, bytes):
+        #     job = job.decode('ascii')
         return job
 
 

@@ -2,11 +2,14 @@ import datetime
 import json
 import os
 
-from cirrocumulus.abstract_db import AbstractDB
-from cirrocumulus.envir import SERVER_CAPABILITY_JOBS, CIRRO_EMAIL
-from cirrocumulus.invalid_usage import InvalidUsage
-from cirrocumulus.util import get_email_domain
+import pandas._libs.json as ujson
 from google.cloud import datastore
+
+from cirrocumulus.abstract_db import AbstractDB
+from cirrocumulus.envir import SERVER_CAPABILITY_JOBS, CIRRO_EMAIL, CIRRO_JOB_RESULTS
+from cirrocumulus.invalid_usage import InvalidUsage
+from cirrocumulus.job_api import save_job_result_to_file
+from cirrocumulus.util import get_email_domain
 
 DATASET = 'Dataset'
 CAT_NAME = 'Cat_Name'
@@ -183,41 +186,27 @@ class CloudFireStoreNative(AbstractDB):
             raise False
         return user['importer']
 
-    def upsert_dataset(self, email, dataset_id, dataset_name=None, url=None, readers=None, description=None, title=None,
-                       species=None):
+    def upsert_dataset(self, email, readers, dataset):
         client = self.datastore_client
-        update_dict = {}
+
         if readers is not None:
             readers = set(readers)
             if email in readers:
                 readers.remove(email)
             readers.add(email)
-            update_dict['readers'] = list(readers)
-
+            dataset['readers'] = list(readers)
+        dataset_id = dataset.get('id')
         if dataset_id is not None:  # only owner can update
-            key, dataset = self.__get_key_and_dataset(email, dataset_id, True)
-        else:
-            dataset = datastore.Entity(client.key(DATASET), exclude_from_indexes=['url'])
+            key, dataset_entity = self.__get_key_and_dataset(email, dataset_id, True)
+        else:  # new dataset
+            dataset_entity = datastore.Entity(client.key(DATASET), exclude_from_indexes=['url'])
             user = client.get(client.key(USER, email))
             if 'importer' not in user or not user['importer']:
                 raise InvalidUsage('Not authorized', 403)
-            update_dict['owners'] = [email]
-            if 'readers' not in update_dict:
-                update_dict['readers'] = [email]
-        if dataset_name is not None:
-            update_dict['name'] = dataset_name
-        if url is not None:
-            update_dict['url'] = url
+            dataset['owners'] = [email]
 
-        if description is not None:
-            update_dict['description'] = description
-
-        if title is not None:
-            update_dict['title'] = title
-        if species is not None:
-            update_dict['species'] = species
-        dataset.update(update_dict)
-        client.put(dataset)
+        dataset_entity.update(dataset)
+        client.put(dataset_entity)
         dataset_id = dataset.id
         return dataset_id
 
@@ -242,7 +231,7 @@ class CloudFireStoreNative(AbstractDB):
 
     # views
     def dataset_views(self, email, dataset_id):
-        return self.__get_entity_list(email=email, dataset_id=dataset_id, kind=DATASET_VIEW, keys=['name'])
+        return self.__get_entity_list(email=email, dataset_id=dataset_id, kind=DATASET_VIEW, keys=['name', 'last_updated'])
 
     def delete_dataset_view(self, email, dataset_id, view_id):
         return self.__delete_entity(email=email, kind=DATASET_VIEW, entity_id=view_id)
@@ -250,16 +239,18 @@ class CloudFireStoreNative(AbstractDB):
     def get_dataset_view(self, email, dataset_id, view_id):
         return self.__get_entity(email=email, entity_id=view_id, kind=DATASET_VIEW)
 
-    def upsert_dataset_view(self, email, dataset_id, view_id, name, value):
-        entity_update = {'created': datetime.datetime.utcnow()}
+    def upsert_dataset_view(self, email, dataset_id, view):
+        view['last_updated'] = datetime.datetime.utcnow()
+        if 'value' in view:
+            view['value'] = json.dumps(view['value'])
         if email is not None:
-            entity_update['email'] = email
-        if name is not None:
-            entity_update['name'] = name
-        if value is not None:
-            entity_update['value'] = json.dumps(value)
-        return self.__upsert_entity(email=email, dataset_id=dataset_id, entity_id=view_id, kind=DATASET_VIEW,
-                                    entity_update=entity_update)
+            view['email'] = email
+        if dataset_id is not None:
+            view['dataset_id'] = dataset_id
+        view_id = view.pop('id') if 'id' in view else None
+        view_id = self.__upsert_entity(email=email, dataset_id=dataset_id, entity_id=view_id, kind=DATASET_VIEW,
+                                       entity_update=view)
+        return dict(id=view_id, last_updated=view['last_updated'])
 
     def create_job(self, email, dataset_id, job_name, job_type, params):
         dataset_id = int(dataset_id)
@@ -286,6 +277,8 @@ class CloudFireStoreNative(AbstractDB):
         return dict(status=result['result' if return_result else 'status'])
 
     def update_job(self, email, job_id, status, result):
+        if not self.capabilities()[SERVER_CAPABILITY_JOBS]:
+            return
         client = self.datastore_client
         job_id = int(job_id)
         is_complete = result is not None
@@ -297,10 +290,12 @@ class CloudFireStoreNative(AbstractDB):
         client.put(entity)
 
         if is_complete:
+            if os.environ.get(CIRRO_JOB_RESULTS) is not None:  # save to directory
+                result = save_job_result_to_file(result, job_id)
+            else:
+                result = ujson.dumps(result, double_precision=2, orient='values')
             key = client.key(JOB_RESULT, job_id)
             entity = client.get(key)
-            from cirrocumulus.util import to_json
-            result = to_json(result)
             entity.update(dict(result=result))
             client.put(entity)
 

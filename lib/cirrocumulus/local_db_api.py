@@ -1,9 +1,12 @@
+import datetime
 import json
 import os
 
 from cirrocumulus.abstract_db import AbstractDB
 from cirrocumulus.envir import *
 from cirrocumulus.io_util import unique_id
+from cirrocumulus.job_api import save_job_result_to_file
+from cirrocumulus.util import get_fs
 
 
 def create_dataset_meta(path):
@@ -28,6 +31,24 @@ class LocalDbAPI(AbstractDB):
     def __init__(self, paths):
         super().__init__()
         self.dataset_to_info = {}  # json_data, meta, json_path
+        self.job_id_to_job = {}
+        if os.environ.get(CIRRO_JOB_RESULTS) is not None:  # load saved on disk
+            fs = get_fs(os.environ[CIRRO_JOB_RESULTS])
+            fs.makedirs(os.environ[CIRRO_JOB_RESULTS], exist_ok=True)
+            for url in fs.ls(os.environ[CIRRO_JOB_RESULTS]):
+                if url.lower().endswith('.json.gz'):
+                    import gzip
+                    with gzip.open(fs.open(url)) as f:
+                        d = json.load(f)
+                        if 'id' in d:
+                            d['url'] = url
+                            self.job_id_to_job[d['id']] = d
+                elif url.lower().endswith('.json'):
+                    with fs.open(url) as f:
+                        d = json.load(f)
+                        if 'id' in d:
+                            d['url'] = url
+                            self.job_id_to_job[d['id']] = d
 
         for path in paths:
             json_data = {}
@@ -202,14 +223,52 @@ class LocalDbAPI(AbstractDB):
         dataset_id = self.__find_dataset_id(view_id, 'views')
         return self.__get_entity(dataset_id=dataset_id, entity_id=view_id, kind='views')
 
-    def upsert_dataset_view(self, email, dataset_id, view_id, name, value):
-        entity = {}
-        if name is not None:
-            entity['name'] = name
-        if value is not None:
-            entity['value'] = json.dumps(value)
+    def upsert_dataset_view(self, email, dataset_id, view):
+        view['last_updated'] = datetime.datetime.utcnow()
+        if 'value' in view:
+            view['value'] = json.dumps(view['value'])
         if email is not None:
-            entity['email'] = email
+            view['email'] = email
         if dataset_id is not None:
-            entity['dataset_id'] = dataset_id
-        return self.__upsert_entity(dataset_id=dataset_id, entity_id=view_id, kind='views', entity_dict=entity)
+            view['dataset_id'] = dataset_id
+        view_id = view.pop('id') if 'id' in view else None
+        view_id = self.__upsert_entity(dataset_id=dataset_id, entity_id=view_id, kind='views', entity_dict=view)
+        return dict(id=view_id, last_updated=view['last_updated'])
+
+    def create_job(self, email, dataset_id, job_name, job_type, params):
+        import datetime
+        job_id = unique_id()
+        self.job_id_to_job[job_id] = dict(id=job_id, dataset_id=dataset_id, name=job_name, type=job_type, params=params,
+                                          status=None, submitted=datetime.datetime.utcnow())
+        return job_id
+
+    def get_job(self, email, job_id, return_result):
+        job = self.job_id_to_job[job_id]
+        if return_result:
+            return job['result'] if 'result' in job else job
+        return dict(id=job['id'], name=job['name'], type=job['type'], status=job['status'], submitted=job['submitted'])
+
+    def get_jobs(self, email, dataset_id):
+        results = []
+        for job in self.job_id_to_job.values():
+            if dataset_id == job['dataset_id']:
+                results.append(dict(id=job['id'], name=job['name'], type=job['type'], status=job['status'],
+                                    submitted=job['submitted']))
+        return results
+
+    def delete_job(self, email, job_id):
+        job = self.job_id_to_job.pop(job_id)
+        if 'url' in job and os.path.exists(job['url']):
+            os.remove(job['url'])
+
+    def update_job(self, email, job_id, status, result):
+        job = self.job_id_to_job[job_id]
+        job['status'] = status
+        if result is not None:
+            if os.environ.get(CIRRO_JOB_RESULTS) is not None:  # save to directory
+                result.update(job)
+                save_job_result_to_file(result, job_id)
+                job['result'] = result
+            else:
+                from cirrocumulus.util import to_json
+                job['result'] = to_json(result)
