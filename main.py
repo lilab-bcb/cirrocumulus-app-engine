@@ -6,8 +6,8 @@ sys.path.append('lib')
 from flask import Flask, send_from_directory
 
 import cirrocumulus
-from cirrocumulus.cloud_firestore_native import CloudFireStoreNative
-from cirrocumulus.api import blueprint
+from cirrocumulus.cloud_firestore import CloudFireStore
+from cirrocumulus.api import cirro_blueprint
 from cirrocumulus.envir import CIRRO_AUTH_CLIENT_ID, CIRRO_AUTH, CIRRO_DATABASE, CIRRO_DATASET_PROVIDERS
 from cirrocumulus.google_auth import GoogleAuth
 from cirrocumulus.no_auth import NoAuth
@@ -19,7 +19,7 @@ client_path = os.path.join(cirrocumulus.__path__[0], 'client')
 
 
 app = Flask(__name__, static_folder=client_path, static_url_path='')
-app.register_blueprint(blueprint, url_prefix='/api')
+app.register_blueprint(cirro_blueprint, url_prefix='/api')
 
 
 @app.route('/')
@@ -28,11 +28,11 @@ def root():
 
 
 if os.environ.get(CIRRO_AUTH_CLIENT_ID) is not None:
-    app.config[CIRRO_AUTH] = GoogleAuth(os.environ.get(CIRRO_AUTH_CLIENT_ID))
+    app.config[CIRRO_AUTH] = GoogleAuth()
 else:
     app.config[CIRRO_AUTH] = NoAuth()
 
-app.config[CIRRO_DATABASE] = CloudFireStoreNative()
+app.config[CIRRO_DATABASE] = CloudFireStore()
 os.environ[CIRRO_DATASET_PROVIDERS] = ','.join(['cirrocumulus.zarr_dataset.ZarrDataset',
                                                 'cirrocumulus.parquet_dataset.ParquetDataset'])
 add_dataset_providers()
