@@ -44,6 +44,8 @@ PERFORMANCE OF THIS SOFTWARE.
 
 /*! js-cookie v3.0.1 | MIT */
 
+/*! regenerator-runtime -- Copyright (c) 2014-present, Facebook, Inc. -- license (MIT): https://github.com/facebook/regenerator/blob/main/LICENSE */
+
 /**
  * @license
  * Copyright 2010-2022 Three.js Authors
@@ -137,7 +139,7 @@ PERFORMANCE OF THIS SOFTWARE.
  * @license MIT
  */
 
-/** @license MUI v5.8.7
+/** @license MUI v5.10.4
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.

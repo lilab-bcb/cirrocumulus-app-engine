@@ -1,4 +1,4 @@
-runtime: python38
+runtime: python310
 instance_class: F4
 automatic_scaling:
   target_cpu_utilization: 0.95
@@ -36,4 +36,4 @@ handlers:
 
 
 env_variables:
-  CIRRO_AUTH_CLIENT_ID: "ENTER ID"
+  CIRRO_AUTH_CLIENT_ID: ""
