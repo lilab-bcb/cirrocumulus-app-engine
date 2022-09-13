@@ -4,7 +4,7 @@ fsspec==2022.8.2
 gcsfs==2022.8.2
 google-cloud-datastore==2.8.1
 natsort==8.2.0
-numpy==1.23.2
+numpy==1.23.3
 pandas==1.4.4
 packaging==21.3
 pyarrow==9.0.0
